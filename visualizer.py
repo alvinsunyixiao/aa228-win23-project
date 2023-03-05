@@ -1,5 +1,5 @@
 from graphics import *
-from entities import RectangleEntity, CircleEntity, RingEntity
+from entities import RectangleEntity
 
 class Visualizer:
     def __init__(self, width: float, height: float, ppm: int):
@@ -36,10 +36,6 @@ class Visualizer:
                 if isinstance(agent, RectangleEntity):
                     C = [self.ppm*c for c in agent.corners]
                     img = Polygon([Point(c.x, self.display_height-c.y) for c in C])
-                elif isinstance(agent, CircleEntity):
-                    img = Circle(Point(self.ppm*agent.center.x, self.display_height - self.ppm*agent.center.y), self.ppm*agent.radius)
-                elif isinstance(agent, RingEntity):
-                    img = CircleRing(Point(self.ppm*agent.center.x, self.display_height - self.ppm*agent.center.y), self.ppm*agent.inner_radius, self.ppm*agent.outer_radius)
                 else:
                     raise NotImplementedError
                 img.setFill(agent.color)

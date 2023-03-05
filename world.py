@@ -1,5 +1,4 @@
-from agents import Car, Pedestrian, RectangleBuilding
-from entities import Entity
+from entities import Entity, Car
 from typing import Union
 from visualizer import Visualizer
 

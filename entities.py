@@ -35,10 +35,6 @@ class Entity:
             # (i) the longer side of the rectangle is always the nominal direction of the car
             # (ii) the center of mass is the same as the geometric center of the RectangleEntity.
             return np.maximum(self.size.x, self.size.y) / 2.
-        elif isinstance(self, CircleEntity):
-            return self.radius
-        elif isinstance(self, RingEntity):
-            return (self.inner_radius + self.outer_radius) / 2.
         raise NotImplementedError
     
     def tick(self, dt: float):
@@ -128,22 +124,13 @@ class RectangleEntity(Entity):
     def buildGeometry(self):
         C = self.corners
         self.obj = Rectangle(*C[:-1])
-        
-class CircleEntity(Entity):
-    def __init__(self, center: Point, heading: float, radius: float, movable: bool = True, friction: float = 0):
-        super(CircleEntity, self).__init__(center, heading, movable, friction)
-        self.radius = radius
-        self.buildGeometry()
-        
-    def buildGeometry(self):
-        self.obj = Circle(self.center, self.radius)
-                    
-class RingEntity(Entity):
-    def __init__(self, center: Point, heading: float, inner_radius: float, outer_radius: float, movable: bool = True, friction: float = 0):
-        super(RingEntity, self).__init__(center, heading, movable, friction)
-        self.inner_radius = inner_radius
-        self.outer_radius = outer_radius
-        self.buildGeometry()
-        
-    def buildGeometry(self):
-        self.obj = Ring(self.center, self.inner_radius, self.outer_radius)
+
+
+class Car(RectangleEntity):
+    def __init__(self, center: Point, heading: float, color: str = 'red'):
+        size = Point(4., 2.)
+        movable = True
+        friction = 0.06
+        super(Car, self).__init__(center, heading, size, movable, friction)
+        self.color = color
+        self.collidable = True
