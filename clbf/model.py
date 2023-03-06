@@ -14,6 +14,7 @@ from flax.training.checkpoints import save_checkpoint, restore_checkpoint
 
 from dynamics import AffineCtrlSys
 
+
 class MLPCertificate(nn.Module):
     configs: T.Tuple[int, ...] = (48, 48, 8)
 
@@ -25,7 +26,6 @@ class MLPCertificate(nn.Module):
                 x = nn.elu(x)
 
         return jnp.sum(x * x, axis=-1)
-
 
 
 class CLBF:
