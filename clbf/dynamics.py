@@ -1,5 +1,7 @@
 import typing as T
 
+from abc import ABC, abstractmethod
+
 import numpy as np
 import jax.numpy as jnp
 
@@ -9,9 +11,37 @@ import jax.numpy as jnp
 #   controls = [v, w]
 ##################################################################
 
-class Unicycle:
-    def __init__(self, num_neighbors: int = 1):
+class AffineCtrlSys(ABC):
+    @abstractmethod
+    def f(self, states):
+        pass
+
+    @abstractmethod
+    def g(self, states):
+        pass
+
+    @abstractmethod
+    def safety_mask(self, states):
+        pass
+
+    @property
+    @abstractmethod
+    def state_dim(self) -> int:
+        return 0
+
+    @property
+    @abstractmethod
+    def control_dim(self) -> int:
+        return 0
+
+    def dynamics(self, states, controls):
+        return self.f(states) + (self.g(states) @ controls[..., jnp.newaxis])[..., 0]
+
+
+class Unicycle(AffineCtrlSys):
+    def __init__(self, num_neighbors: int = 1, safety_thresh: float = 1.):
         self.num_neighbors = num_neighbors
+        self.safety_thresh = safety_thresh
 
     def f(self, states):
         return jnp.zeros_like(states)
@@ -30,10 +60,7 @@ class Unicycle:
 
         return jnp.concatenate([g_raw, g_obs], axis=-2)
 
-    def dynamics(self, states, controls):
-        return self.f(states) + (self.g(states) @ controls[..., jnp.newaxis])[..., 0]
-
-    def safety_mask(self, states, safety_thresh: float = 1.):
+    def safety_mask(self, states):
         if self.num_neighbors == 0:
             return jnp.ones_like(states[..., 0], dtype=bool)
 
@@ -45,7 +72,7 @@ class Unicycle:
         dists_bk = jnp.linalg.norm(self_b12 - neighbors_bk2, axis=-1)
         min_dists_b = jnp.min(dists_bk, axis=-1)
 
-        return (min_dists_b > safety_thresh)
+        return (min_dists_b > self.safety_thresh)
 
     def random_states(self,
         batch_shape: T.Union[int, T.Tuple[int, ...]] = 2**15,
