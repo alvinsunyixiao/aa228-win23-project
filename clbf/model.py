@@ -16,7 +16,10 @@ from dynamics import AffineCtrlSys
 
 
 class MLPCertificate(nn.Module):
-    configs: T.Tuple[int, ...] = (64, 64, 64)
+    u_dim: int
+    mlp_configs: T.Tuple[int, ...] = (64, 64)
+    cert_dim: int = 8
+
     extend: T.Callable = lambda x: x
     prior: T.Callable = lambda x: 0
 
@@ -25,12 +28,16 @@ class MLPCertificate(nn.Module):
         prior = self.prior(x)
 
         x = self.extend(x)
-        for i, feat in enumerate(self.configs):
+        for i, feat in enumerate(self.mlp_configs):
             x = nn.Dense(features=feat)(x)
-            if i < len(self.configs) - 1:
-                x = nn.tanh(x)
+            x = nn.tanh(x)
 
-        return 0.5 * jnp.sum(x * x, axis=-1) + prior
+        Vh = nn.Dense(features=self.cert_dim)(x)
+        V = 0.5 * jnp.sum(Vh * Vh, axis=-1) + prior
+
+        u = nn.Dense(features=self.u_dim)(x)
+
+        return V, u
 
 
 class CLBF:
@@ -38,17 +45,17 @@ class CLBF:
         dynamics: AffineCtrlSys,
         clf_lambda: float = 1.,
         dt: float = 1e-2,
-        mlp_configs: T.Tuple[int, ...] = (64, 64, 64),
+        mlp_configs: T.Tuple[int, ...] = (64, 64),
     ) -> None:
         self.dynamics = dynamics
         self.clf_lambda = clf_lambda
         self.dt = dt
 
         # initialize mlp
-        self.mlp_cert = MLPCertificate(configs=mlp_configs, extend=self.dynamics.extend)
+        self.mlp_cert = MLPCertificate(u_dim=self.dynamics.control_dim, mlp_configs=mlp_configs, extend=self.dynamics.extend)
         rng = jax.random.PRNGKey(0)
         params = self.mlp_cert.init(rng, jnp.ones((1, self.dynamics.state_dim)))["params"]
-        tx = optax.sgd(optax.exponential_decay(1e-3, 2000, 0.1), 0.9)
+        tx = optax.sgd(optax.exponential_decay(1e-2, 4000, 0.1), 0.9)
         self.state = TrainState.create(apply_fn=self.mlp_cert.apply, params=params, tx=tx)
 
         # checkpoint manager
@@ -74,9 +81,9 @@ class CLBF:
     @functools.partial(jax.jit, static_argnums=(0,))
     def policy(self, state, u_ref=None, relaxation_penalty=1e5):
         sol, (V, Vdot) = self.solve_CLBF_QP(self.V, state, u_ref=u_ref, relaxation_penalty=relaxation_penalty)
-        return sol.params.primal[:-1], (V, Vdot)
+        return sol.params.primal[:-1], sol.params.primal[-1]
 
-    def solve_CLBF_QP(self, V_func, state, relaxation_penalty=100, u_ref=None):
+    def solve_CLBF_QP(self, V_func, state, relaxation_penalty=1e4, u_ref=None):
         V, V_D_x_s = jax.value_and_grad(V_func)(state)
 
         Lf_V = V_D_x_s @ self.dynamics.f(state)
@@ -124,34 +131,34 @@ class CLBF:
             V_func = lambda x: state.apply_fn({"params": params}, x)
 
             # term 1: goal position
-            loss1_b = V_func(batch["goal_states"])
+            loss1_b, _ = V_func(batch["goal_states"])
             loss1 = jnp.mean(loss1_b)
 
-            def loss234_single(x):
-                sol, (V, Vdot) = self.solve_CLBF_QP(V_func, x)
+            def loss23_single(x):
+                (V, u), V_D_x_s = jax.value_and_grad(V_func, has_aux=True)(x)
 
-                # term 2: relaxation
-                success = sol.state.status == BoxOSQP.SOLVED
-                loss2 = sol.params.primal[-1]
-                loss2 = lax.select(success, sol.params.primal[-1], 0.)
+                Lf_V = V_D_x_s @ self.dynamics.f(x)
+                Lg_V_c = V_D_x_s @ self.dynamics.g(x)
+                Vdot = Lf_V + Lg_V_c @ u
 
-                # term 3: linearization
-                loss3 = lax.select(success, nn.relu(1.0 + Vdot), 0.)
+                # term 2: linearization
+                loss2 = nn.relu(1.0 + Vdot + self.clf_lambda * V)
 
-                # term 4: simulation
-                u = sol.params.primal[:-1]
+                # term 3: simulation
                 x_next = x + self.dt * self.dynamics.dynamics(x, u)
-                V_next = V_func(x_next)
-                loss4 = lax.select(success, nn.relu(1.0 + (V_next - V) / self.dt), 0.)
+                V_next, _ = V_func(x_next)
+                loss3 = nn.relu(1.0 + (V_next - V) / self.dt + self.clf_lambda * V)
 
-                return loss2, loss3, loss4, success.astype(float)
+                loss4 = jnp.linalg.norm(u, axis=-1)
 
-            loss2_b, loss3_b, loss4_b, success_b = jax.vmap(loss234_single)(batch["rand_states"])
-            loss2 = jnp.sum(loss2_b) / jnp.sum(success_b)
-            loss3 = jnp.sum(loss3_b) / jnp.sum(success_b)
-            loss4 = jnp.sum(loss4_b) / jnp.sum(success_b)
+                return loss2, loss3, loss4
 
-            loss = 1e1 * loss1 + 1e2 * loss2 + loss3 + loss4
+            loss2_b, loss3_b, loss4_b = jax.vmap(loss23_single)(batch["rand_states"])
+            loss2 = jnp.mean(loss2_b)
+            loss3 = jnp.mean(loss3_b)
+            loss4 = jnp.mean(loss4_b)
+
+            loss = 1e1 * loss1 + loss2 + loss3 + loss4
 
             return loss, {
                 "loss": loss,

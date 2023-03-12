@@ -18,9 +18,9 @@ if __name__ == "__main__":
     args = parse_args()
 
     dynamics = Unicycle(0)
-    clbf = CLBF(dynamics, 0.2)
+    clbf = CLBF(dynamics)
 
-    for i in range(5000):
+    for i in range(10000):
         batch = {
             "rand_states": dynamics.random_states(),
             "goal_states": dynamics.random_goal_states(),

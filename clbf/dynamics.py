@@ -45,13 +45,14 @@ class AffineCtrlSys(ABC):
 
 
 class Unicycle(AffineCtrlSys):
-    def __init__(self, num_neighbors: int = 1, control_limit: T.Sequence[float] = (1., 1.), safety_thresh: float = 0.3):
+    def __init__(self, num_neighbors: int = 1, control_limit: T.Sequence[float] = (2., 2.), safety_thresh: float = 0.3):
         self.num_neighbors = num_neighbors
         self.safety_thresh = safety_thresh
         self.ulim = jnp.array(control_limit)
 
     def f(self, states):
-        return jnp.zeros_like(states)
+        states_dot = jnp.zeros_like(states)
+        return states_dot.at[..., :2].set(states[..., 2:4])
 
     def g(self, states):
         theta = states[..., 2]
@@ -59,8 +60,8 @@ class Unicycle(AffineCtrlSys):
         x_zeros = jnp.zeros_like(theta)
         x_ones = jnp.ones_like(theta)
 
-        col1 = jnp.stack([jnp.cos(theta), jnp.sin(theta), x_zeros], axis=-1)
-        col2 = jnp.stack([x_zeros, x_zeros, x_ones], axis=-1)
+        col1 = jnp.stack([x_zeros, x_zeros, jnp.cos(theta), jnp.sin(theta), x_zeros], axis=-1)
+        col2 = jnp.stack([x_zeros, x_zeros, x_zeros, x_zeros, x_ones], axis=-1)
 
         g_raw = jnp.stack([col1, col2], axis=-1)
         g_obs = jnp.zeros(g_raw.shape[:-2] + (self.num_neighbors * 2, 2))
@@ -68,8 +69,8 @@ class Unicycle(AffineCtrlSys):
         return jnp.concatenate([g_raw, g_obs], axis=-2)
 
     def extend(self, states):
-        theta = states[..., 2, jnp.newaxis]
-        return jnp.concatenate([states[..., :2], jnp.sin(theta), jnp.cos(theta)], axis=-1)
+        theta = states[..., 4, jnp.newaxis]
+        return jnp.concatenate([states[..., :4], jnp.sin(theta), jnp.cos(theta)], axis=-1)
 
     def control_limit(self):
         return -self.ulim, self.ulim
@@ -78,7 +79,7 @@ class Unicycle(AffineCtrlSys):
         if self.num_neighbors == 0:
             return jnp.ones_like(states[..., 0], dtype=bool)
 
-        neighbors = states[..., 3:]
+        neighbors = states[..., 5:]
         neighbors_bk2 = jnp.reshape(neighbors, states.shape[:-2] + (-1, 2))
         self_b2 = states[..., :2]
         self_b12 = self_b2[..., jnp.newaxis, :]
@@ -89,16 +90,18 @@ class Unicycle(AffineCtrlSys):
         return (min_dists_b > self.safety_thresh)
 
     def random_states(self,
-        batch_shape: T.Union[int, T.Tuple[int, ...]] = 2**12,
+        batch_shape: T.Union[int, T.Tuple[int, ...]] = 2**15,
         max_state_trans: float = 4.,
+        max_state_vel: float = 1.,
         max_obs_dist: float = 4.,
     ):
         if isinstance(batch_shape, int):
             batch_shape = (batch_shape,)
 
         self_xy = np.random.uniform(-max_state_trans, max_state_trans, size=batch_shape + (2,))
+        self_vel_xy = np.random.uniform(-max_state_vel, max_state_vel, size=batch_shape + (2,))
         self_theta = np.random.uniform(-np.pi, np.pi, size=batch_shape + (1,))
-        self_b3 = np.concatenate([self_xy, self_theta], axis=-1)
+        self_b5 = np.concatenate([self_xy, self_vel_xy, self_theta], axis=-1)
 
         others_dir_bk2 = np.random.normal(size=batch_shape + (self.num_neighbors, 2))
         others_dir_bk2 /= np.maximum(np.linalg.norm(others_dir_bk2, axis=-1, keepdims=True), 1e-9)
@@ -106,16 +109,16 @@ class Unicycle(AffineCtrlSys):
         others_xy_bk2 = self_xy[..., jnp.newaxis, :] + others_dir_bk2 * others_dist_bk1
         others_xy_bl = np.reshape(others_xy_bk2, batch_shape + (-1,))
 
-        return np.concatenate([self_b3, others_xy_bl], axis=-1)
+        return np.concatenate([self_b5, others_xy_bl], axis=-1)
 
     def random_goal_states(self,
-        batch_shape: T.Union[int, T.Tuple[int, ...]] = 2**12,
-        max_obs_dist: float = 2.,
+        batch_shape: T.Union[int, T.Tuple[int, ...]] = 2**15,
+        max_obs_dist: float = 4.,
     ):
         if isinstance(batch_shape, int):
             batch_shape = (batch_shape,)
 
-        self_b3 = np.zeros(batch_shape + (3,))
+        self_b5 = np.zeros(batch_shape + (5,))
 
         others_dir_bk2 = np.random.normal(size=batch_shape + (self.num_neighbors, 2))
         others_dir_bk2 /= np.maximum(np.linalg.norm(others_dir_bk2, axis=-1, keepdims=True), 1e-9)
@@ -123,11 +126,11 @@ class Unicycle(AffineCtrlSys):
         others_xy_bk2 = others_dir_bk2 * others_dist_bk1
         others_xy_bl = np.reshape(others_xy_bk2, batch_shape + (-1,))
 
-        return np.concatenate([self_b3, others_xy_bl], axis=-1)
+        return np.concatenate([self_b5, others_xy_bl], axis=-1)
 
     @property
     def state_dim(self):
-        return 3 + self.num_neighbors * 2
+        return 5 + self.num_neighbors * 2
 
     @property
     def control_dim(self):
