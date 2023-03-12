@@ -1,13 +1,13 @@
 import functools
 import jax
 import jax.numpy as jnp
-import jax.lax as lax
 import numpy as np
 import optax
 import orbax
 import typing as T
 
 from jaxopt import OSQP, BoxOSQP
+from jax import lax
 from flax import linen as nn
 from flax.training.train_state import TrainState
 from flax.training.checkpoints import save_checkpoint, restore_checkpoint
@@ -16,27 +16,39 @@ from dynamics import AffineCtrlSys
 
 
 class MLPCertificate(nn.Module):
-    configs: T.Tuple[int, ...] = (48, 48, 8)
+    configs: T.Tuple[int, ...] = (64, 64, 64)
+    extend: T.Callable = lambda x: x
+    prior: T.Callable = lambda x: 0
 
     @nn.compact
     def __call__(self, x):
+        prior = self.prior(x)
+
+        x = self.extend(x)
         for i, feat in enumerate(self.configs):
             x = nn.Dense(features=feat)(x)
             if i < len(self.configs) - 1:
-                x = nn.elu(x)
+                x = nn.tanh(x)
 
-        return jnp.sum(x * x, axis=-1)
+        return 0.5 * jnp.sum(x * x, axis=-1) + prior
 
 
 class CLBF:
-    def __init__(self, dynamics: AffineCtrlSys, mlp_configs: T.Sequence[int] = [48, 48, 8]):
+    def __init__(self,
+        dynamics: AffineCtrlSys,
+        clf_lambda: float = 1.,
+        dt: float = 1e-2,
+        mlp_configs: T.Tuple[int, ...] = (64, 64, 64),
+    ) -> None:
         self.dynamics = dynamics
+        self.clf_lambda = clf_lambda
+        self.dt = dt
 
         # initialize mlp
-        self.mlp_cert = MLPCertificate(configs=mlp_configs)
+        self.mlp_cert = MLPCertificate(configs=mlp_configs, extend=self.dynamics.extend)
         rng = jax.random.PRNGKey(0)
         params = self.mlp_cert.init(rng, jnp.ones((1, self.dynamics.state_dim)))["params"]
-        tx = optax.sgd(1e-3, 0.9)
+        tx = optax.sgd(optax.exponential_decay(1e-3, 2000, 0.1), 0.9)
         self.state = TrainState.create(apply_fn=self.mlp_cert.apply, params=params, tx=tx)
 
         # checkpoint manager
@@ -56,76 +68,104 @@ class CLBF:
                                         step=step,
                                         orbax_checkpointer=self.checkpointer)
 
-    def solve_CLBF_QP(self, state, V_func: T.Callable):
+    def V(self, state):
+        return self.state.apply_fn({"params": self.state.params}, state)
+
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def policy(self, state, u_ref=None, relaxation_penalty=1e5):
+        sol, (V, Vdot) = self.solve_CLBF_QP(self.V, state, u_ref=u_ref, relaxation_penalty=relaxation_penalty)
+        return sol.params.primal[:-1], (V, Vdot)
+
+    def solve_CLBF_QP(self, V_func, state, relaxation_penalty=100, u_ref=None):
         V, V_D_x_s = jax.value_and_grad(V_func)(state)
 
         Lf_V = V_D_x_s @ self.dynamics.f(state)
         Lg_V_c = V_D_x_s @ self.dynamics.g(state)
 
-        qp = OSQP()
         ur_dim = self.dynamics.control_dim + 1
 
         # objective
-        Q = jnp.eye(ur_dim)
+        Q = 2. * jnp.eye(ur_dim)
         Q = Q.at[-1, -1].set(0.)
-        c = jnp.zeros(ur_dim)
-        c.at[-1].set(100)  # relaxation penalty
+        if u_ref is None:
+            u_ref = jnp.zeros(self.dynamics.control_dim)
+        c = jnp.concatenate([-2. * u_ref, jnp.array([relaxation_penalty])])
 
         # inequality
         G1 = jnp.concatenate([Lg_V_c, jnp.array([-1.])])
-        h1 = -V - Lf_V
+        h1 = -self.clf_lambda*V - Lf_V
         G2 = jnp.zeros(ur_dim)
         G2 = G2.at[-1].set(-1.)
         h2 = 0.
         G = jnp.stack([G1, G2])
         h = jnp.stack([h1, h2])
+        # control limits
+        G3 = jnp.zeros((self.dynamics.control_dim, ur_dim))
+        G3 = G3.at[:, :-1].set(jnp.eye(self.dynamics.control_dim))
+        ulim_low, ulim_high = self.dynamics.control_limit()
+        G = jnp.concatenate([G, -G3, G3], axis=0)
+        h = jnp.concatenate([h, -ulim_low, ulim_high], axis=0)
 
         # solve OSQP
+        qp = OSQP(eq_qp_solve="cg+jacobi")
         sol = qp.run(params_obj=(Q, c), params_ineq=(G, h))
-        Vdot = Lf_V + Lg_V_c @ sol.params.primal[:-1]
+
+        u = sol.params.primal[:-1]
+        Vdot = Lf_V + Lg_V_c @ u
 
         return sol, (V, Vdot)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def policy(self, state):
-        V_func = lambda x: self.mlp_cert.apply({"params": self.state.params}, x)
-
-        qp_sol, (V, Vdot) = self.solve_CLBF_QP(state, V_func)
-
-        return qp_sol.params.primal[:-1], (V, Vdot)
-
-    @functools.partial(jax.jit, static_argnums=(0,))
     def _clbf_train_step(self,
                          state: TrainState,
-                         batch: T.Dict[str, T.Any]) -> TrainState:
+                         batch: T.Dict[str, T.Any],
+                         step: int) -> TrainState:
         def loss_fn(params):
             V_func = lambda x: state.apply_fn({"params": params}, x)
 
             # term 1: goal position
             loss1_b = V_func(batch["goal_states"])
+            loss1 = jnp.mean(loss1_b)
 
-            # term 2: feasibility
-            def loss23_single(x):
-                V = V_func(x)
-                qp_sol, (_, Vdot) = self.solve_CLBF_QP(x, V_func)
+            def loss234_single(x):
+                sol, (V, Vdot) = self.solve_CLBF_QP(V_func, x)
 
-                r = lax.select(qp_sol.state.status == BoxOSQP.SOLVED, qp_sol.params.primal[-1], 0.)
-                u = qp_sol.params.primal[:-1]
+                # term 2: relaxation
+                success = sol.state.status == BoxOSQP.SOLVED
+                loss2 = sol.params.primal[-1]
+                loss2 = lax.select(success, sol.params.primal[-1], 0.)
 
-                return r, nn.relu(1.0 + Vdot + V)
+                # term 3: linearization
+                loss3 = lax.select(success, nn.relu(1.0 + Vdot), 0.)
 
-            loss2_b, loss3_b = jax.vmap(loss23_single)(batch["rand_states"])
+                # term 4: simulation
+                u = sol.params.primal[:-1]
+                x_next = x + self.dt * self.dynamics.dynamics(x, u)
+                V_next = V_func(x_next)
+                loss4 = lax.select(success, nn.relu(1.0 + (V_next - V) / self.dt), 0.)
 
-            loss_b = 1e1 * loss1_b + loss2_b + loss3_b
-            return jnp.mean(loss_b), {"loss1": jnp.mean(loss1_b),
-                                      "loss2": jnp.mean(loss2_b),
-                                      "loss3": jnp.mean(loss3_b)}
+                return loss2, loss3, loss4, success.astype(float)
+
+            loss2_b, loss3_b, loss4_b, success_b = jax.vmap(loss234_single)(batch["rand_states"])
+            loss2 = jnp.sum(loss2_b) / jnp.sum(success_b)
+            loss3 = jnp.sum(loss3_b) / jnp.sum(success_b)
+            loss4 = jnp.sum(loss4_b) / jnp.sum(success_b)
+
+            loss = 1e1 * loss1 + 1e2 * loss2 + loss3 + loss4
+
+            return loss, {
+                "loss": loss,
+                "loss1": loss1,
+                "loss2": loss2,
+                "loss3": loss3,
+                "loss4": loss4
+            }
 
         grads, losses = jax.grad(loss_fn, has_aux=True)(state.params)
         state = state.apply_gradients(grads=grads)
         return state, losses
 
-    def train_step(self, batch: T.Dict[str, T.Any]) -> T.Dict[str, T.Any]:
-        self.state, metadict = self._clbf_train_step(self.state, batch)
+    def train_step(self, batch: T.Dict[str, T.Any], step: int) -> T.Dict[str, T.Any]:
+        self.state, metadict = self._clbf_train_step(self.state, batch, step)
         return metadict
 

@@ -1,17 +1,32 @@
+import argparse
+
+from jax.config import config
+
 from dynamics import Unicycle
 from model import CLBF
 
-if __name__ == "__main__":
-    dynamics = Unicycle(3)
-    clbf = CLBF(dynamics)
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-o", "--output", type=str, default="ckpts",
+                        help="output directory to store checkpoints")
 
-    for i in range(10000):
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    #config.update("jax_enable_x64", True)
+
+    args = parse_args()
+
+    dynamics = Unicycle(0)
+    clbf = CLBF(dynamics, 0.2)
+
+    for i in range(5000):
         batch = {
-            "goal_states": dynamics.random_states(),
-            "rand_states": dynamics.random_goal_states(),
+            "rand_states": dynamics.random_states(),
+            "goal_states": dynamics.random_goal_states(),
         }
-        losses = clbf.train_step(batch)
-        print(losses["loss1"], losses["loss2"], losses["loss3"])
+        losses = clbf.train_step(batch, i)
+        print(losses["loss"], losses["loss1"], losses["loss2"], losses["loss3"], losses["loss4"])
 
         if i % 100 == 0:
-            clbf.save("ckpts", step=i)
+            clbf.save(args.output, step=i)
