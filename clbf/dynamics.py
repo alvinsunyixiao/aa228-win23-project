@@ -102,7 +102,7 @@ class Freeflyer(AffineCtrlSys):
             batch_shape = (batch_shape,)
 
         self.rng, subrng = jax.random.split(self.rng)
-        eps = 0.5
+        eps = 0.2
         self_b4 = jax.random.uniform(self.rng, batch_shape + (4,), minval=-self.xlim * (1 + eps), maxval=self.xlim * (1 + eps))
         self_xy = self_b4[..., :2]
 

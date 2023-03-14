@@ -13,7 +13,7 @@ def parse_args():
     return parser.parse_args()
 
 if __name__ == "__main__":
-    #config.update("jax_enable_x64", True)
+    config.update("jax_enable_x64", True)
     #config.update("jax_debug_nans", True)
 
     args = parse_args()
@@ -27,7 +27,7 @@ if __name__ == "__main__":
             "goal_states": dynamics.random_goal_states(),
         }
         losses = clbf.train_step(batch, i)
-        print(losses["loss"], losses["loss1"], losses["loss2"], losses["loss3"], losses["loss4"], losses["loss5"])
+        print(losses["loss"], losses["loss1"], losses["loss2"], losses["loss3"], losses["loss4"], losses["loss5"], losses["success"])
 
         if i % 100 == 0:
             clbf.save(args.output, step=i)
