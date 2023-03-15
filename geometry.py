@@ -1,5 +1,6 @@
-import jax.numpy as np
+import numpy as np
 from typing import Union
+
 
 
 class Point:

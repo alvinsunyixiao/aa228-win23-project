@@ -1,4 +1,4 @@
-import jax.numpy as np
+import numpy as np
 from geometry import Point, Rectangle, Circle, Ring
 from typing import Union
 import copy
@@ -130,7 +130,7 @@ class Car(RectangleEntity):
     def __init__(self, center: Point, heading: float, color: str = 'red'):
         size = Point(4., 2.)
         movable = True
-        friction = 0.06
+        friction = 0.0
         super(Car, self).__init__(center, heading, size, movable, friction)
         self.color = color
         self.collidable = True

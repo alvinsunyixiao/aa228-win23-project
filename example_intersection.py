@@ -1,5 +1,4 @@
-import jax
-import jax.numpy as np
+import numpy as np
 from world import World
 from entities import Car
 from geometry import Point
