@@ -3,8 +3,8 @@ from world import World
 from entities import Car
 from geometry import Point
 import copy
+import multiprocessing as mp
 import time
-import random
 
 
 
@@ -33,16 +33,18 @@ class MPC:
 
     def R_sa(self, world, steer, acc):
         R = self.control_penalty * (abs(steer) + abs(acc) )
-        loc = world.dynamic_agents[self.agent_idx].center
+        agent = world.dynamic_agents[self.agent_idx]
+        loc = agent.center
         loc = np.array([loc.x, loc.y])
         if np.linalg.norm(loc - self.dest) < self.dest_radius:
             R += self.arrival_reward
-        if world.collision_exists(): # this should be changed to be distributed
-            #print("huristic collision detected")
-            R += self.collision_penalty
+        l = len(world.dynamic_agents)
+        for i in range(l):
+            if i != self.agent_idx and agent.collidesWith(world.dynamic_agents[i]):
+                R += self.collision_penalty
         return R
 
-    def look_ahead_with_rollouts(self):
+    def look_ahead_with_rollouts(self , act= None):
 
         def roll_out_policy(h_world):
             agent = h_world.dynamic_agents[self.agent_idx]
@@ -67,7 +69,6 @@ class MPC:
                 # time.sleep(dt / 8)
                 steer, acc = None, None
             ret += self.U_d(h_world) * self.gamma ** self.m
-
             return ret
 
         Q = []
@@ -82,13 +83,13 @@ class MPC:
                 action.append((steer, acc))
         Q = np.array(Q)
         idx = np.argmax(Q)
+        if act != None:
+            act[self.agent_idx] = action[idx]
         return action[idx]
-
 
 if __name__ == "__main__":
     dt = 0.1
     w = World(dt, width=120, height=120, ppm=6)
-
     renderer = copy.deepcopy(w)
 
     c0 = Car(Point(40, 20),np.pi)
@@ -109,17 +110,47 @@ if __name__ == "__main__":
     renderer.add(c2)
     controller2 = MPC(w, 2, np.array([25, 35]))
 
+    c3 = Car(Point(25, 35), -np.pi/2, 'purple')
+    c3.velocity = Point(3.0, 0)
+    w.add(c3)
+    renderer.add(c3)
+    controller3 = MPC(w, 3, np.array([25, 5]))
+
     for i in range(200):
         s0, a0 = controller0.look_ahead_with_rollouts()
         s1, a1 = controller1.look_ahead_with_rollouts()
         s2, a2 = controller2.look_ahead_with_rollouts()
+        s3, a3 = controller3.look_ahead_with_rollouts()
         c0.set_control(s0, a0)
         c1.set_control(s1, a1)
         c2.set_control(s2, a2)
+        c3.set_control(s3, a3)
+
+        '''
+        manager = mp.Manager()
+        act = manager.dict()
+        p0 = mp.Process(target=controller0.look_ahead_with_rollouts, args= (act, ))
+        p1 = mp.Process(target=controller1.look_ahead_with_rollouts, args=(act,))
+        p2 = mp.Process(target=controller2.look_ahead_with_rollouts, args=(act,))
+        p3 = mp.Process(target=controller3.look_ahead_with_rollouts, args=(act,))
+        p0.start()
+        p1.start()
+        p2.start()
+        p3.start()
+        p0.join()
+        p1.join()
+        p2.join()
+        p3.join()
+        c0.set_control(*act[0])
+        c1.set_control(*act[1])
+        c2.set_control(*act[2])
+        c3.set_control(*act[3])
+        '''
+
         w.tick()
         renderer.tick()
         renderer.render()
-        # time.sleep(dt / 8)
+
         if w.collision_exists():
             print('Collision exists somewhere...')
 
