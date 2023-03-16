@@ -9,22 +9,23 @@ import time
 
 
 class MPC:
-    def __init__(self, world, agent_idx, dest, gamma=0.97):
+    def __init__(self, world, agent_idx, dest, gamma=0.94):
         self.world = world
         self.agent_idx = agent_idx
         self.dest = dest
         self.dest_radius = 5
         self.collision_penalty = -10000
         self.arrival_reward = 1000
-        self.control_penalty = 1
+        self.control_penalty = 0
+        self.velocity_penalty = -0.05
         self.steering = [-0.3, 0.3]
         self.acc = [-0.5, 0, 0.5]
-        self.steering_std = np.std(np.array(self.steering)) * 3
-        self.acc_std = np.std(np.array(self.acc)) * 2
-        self.d = 45
-        self.m = 4
+        self.steering_std = np.std(np.array(self.steering)) * 4
+        self.acc_std = np.std(np.array(self.acc)) * 3
+        self.d = 30
+        self.m = 6
         self.gamma = gamma
-        self.roll_out_policy_decay = 0.95
+        self.roll_out_policy_decay = 0.90
 
     def U_d(self, world):
         loc = world.dynamic_agents[self.agent_idx].center
@@ -32,8 +33,8 @@ class MPC:
         return self.arrival_reward/np.linalg.norm(loc - self.dest)
 
     def R_sa(self, world, steer, acc):
-        R = self.control_penalty * (abs(steer) + abs(acc) )
         agent = world.dynamic_agents[self.agent_idx]
+        R =  self.control_penalty * (abs(steer) + abs(acc)) + self.velocity_penalty * agent.velocity.norm(p = 2)
         loc = agent.center
         loc = np.array([loc.x, loc.y])
         if np.linalg.norm(loc - self.dest) < self.dest_radius:
@@ -65,8 +66,8 @@ class MPC:
                         curr_steer = np.random.normal(0.0, self.steering_std)
                         c.set_control(curr_steer, curr_acc)
                 h_world.tick()
-                # h_world.render()
-                # time.sleep(dt / 8)
+                #h_world.render()
+                #time.sleep(dt / 8)
                 steer, acc = None, None
             ret += self.U_d(h_world) * self.gamma ** self.m
             return ret
@@ -87,80 +88,49 @@ class MPC:
             act[self.agent_idx] = action[idx]
         return action[idx]
 
-
+def set_up_car(w, renderer, controllers, cars, start, start_angle, dest, color='red', initial_velo = 3):
+    c= Car(Point(*start),start_angle, color)
+    cars.append(c)
+    c.velocity = Point(initial_velo, 0)
+    w.add(c)
+    controllers.append(MPC(w, len(controllers), np.array(dest)))
+    renderer.add(c)
 
 
 if __name__ == "__main__":
     dt = 0.2
     w = World(dt, width=120, height=120, ppm=6)
     renderer = copy.deepcopy(w)
+    controllers = []
+    cars = []
 
-    c0 = Car(Point(40, 20),np.pi)
-    c0.velocity = Point(3.0, 0)
-    w.add(c0)
-    controller0 = MPC(w, 0, np.array([10, 20]))
-    renderer.add(c0)
+    set_up_car(w,renderer,controllers, cars, (45,20), np.pi,(10,20))
+    set_up_car(w, renderer, controllers, cars,(10, 20), 0, (45, 20))
 
-    c1 = Car(Point(10, 20), 0, 'blue')
-    c1.velocity = Point(3.0, 0)
-    w.add(c1)
-    renderer.add(c1)
-    controller1 = MPC(w, 1, np.array([40, 20]))
+    set_up_car(w,renderer,controllers,cars, (45,25), np.pi,(10,25),"blue")
+    set_up_car(w, renderer, controllers,cars, (10, 25), 0, (45, 25),"blue")
 
-    c2 = Car(Point(25, 5), np.pi/2, 'green')
-    c2.velocity = Point(3.0, 0)
-    w.add(c2)
-    renderer.add(c2)
-    controller2 = MPC(w, 2, np.array([25, 40]))
+    set_up_car(w,renderer,controllers, cars,(25,5), np.pi/2,(25,40),"green")
+    set_up_car(w, renderer, controllers, cars,(25, 40), -np.pi/2, (25, 5), "green")
 
-    c3 = Car(Point(25, 40), -np.pi/2, 'purple')
-    c3.velocity = Point(3.0, 0)
-    w.add(c3)
-    renderer.add(c3)
-    controller3 = MPC(w, 3, np.array([25, 5]))
-
-    c4 = Car(Point(40, 25), np.pi, 'black')
-    c4.velocity = Point(3.0, 0)
-    w.add(c4)
-    controller4 = MPC(w, 4, np.array([10, 25]))
-    renderer.add(c4)
-
-    c5 = Car(Point(10, 25), 0, 'yellow')
-    c5.velocity = Point(3.0, 0)
-    w.add(c5)
-    renderer.add(c5)
-    controller5 = MPC(w, 5, np.array([40, 25]))
+    set_up_car(w,renderer,controllers,cars, (30,5), np.pi/2,(30,40), "purple")
+    set_up_car(w, renderer, controllers, cars,(30, 40), -np.pi/2, (30, 5), "purple")
 
     for i in range(200):
         start = time.time()
         manager = mp.Manager()
         act = manager.dict()
-        p0 = mp.Process(target=controller0.look_ahead_with_rollouts, args= (act, ))
-        p1 = mp.Process(target=controller1.look_ahead_with_rollouts, args=(act,))
-        p2 = mp.Process(target=controller2.look_ahead_with_rollouts, args=(act,))
-        p3 = mp.Process(target=controller3.look_ahead_with_rollouts, args=(act,))
-        p4 = mp.Process(target=controller4.look_ahead_with_rollouts, args=(act,))
-        p5 = mp.Process(target=controller5.look_ahead_with_rollouts, args=(act,))
-        p0.start()
-        p1.start()
-        p2.start()
-        p3.start()
-        p4.start()
-        p5.start()
-        p0.join()
-        p1.join()
-        p2.join()
-        p3.join()
-        p4.join()
-        p5.join()
-        c0.set_control(*act[0])
-        c1.set_control(*act[1])
-        c2.set_control(*act[2])
-        c3.set_control(*act[3])
-        c4.set_control(*act[4])
-        c5.set_control(*act[5])
+        l = len(cars)
+        ps = []
+        for i in range(l):
+            p = mp.Process(target=controllers[i].look_ahead_with_rollouts, args=(act,))
+            p.start()
+            ps.append(p)
+        for i in range(l):
+            ps[i].join()
+            cars[i].set_control(*act[i])
         end = time.time()
-        print(end-start)
+        #print(end-start)
         w.tick()
 
         renderer.render()
