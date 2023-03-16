@@ -13,7 +13,7 @@ class MPC:
         self.world = world
         self.agent_idx = agent_idx
         self.dest = dest
-        self.dest_radius = 10
+        self.dest_radius = 5
         self.collision_penalty = -10000
         self.arrival_reward = 1000
         self.control_penalty = 1
@@ -21,8 +21,8 @@ class MPC:
         self.acc = [-0.5, 0, 0.5]
         self.steering_std = np.std(np.array(self.steering)) * 3
         self.acc_std = np.std(np.array(self.acc)) * 2
-        self.d = 40
-        self.m = 2
+        self.d = 45
+        self.m = 4
         self.gamma = gamma
         self.roll_out_policy_decay = 0.95
 
@@ -87,8 +87,11 @@ class MPC:
             act[self.agent_idx] = action[idx]
         return action[idx]
 
+
+
+
 if __name__ == "__main__":
-    dt = 0.1
+    dt = 0.2
     w = World(dt, width=120, height=120, ppm=6)
     renderer = copy.deepcopy(w)
 
@@ -108,57 +111,60 @@ if __name__ == "__main__":
     c2.velocity = Point(3.0, 0)
     w.add(c2)
     renderer.add(c2)
-    controller2 = MPC(w, 2, np.array([25, 35]))
+    controller2 = MPC(w, 2, np.array([25, 40]))
 
-    c3 = Car(Point(25, 35), -np.pi/2, 'purple')
+    c3 = Car(Point(25, 40), -np.pi/2, 'purple')
     c3.velocity = Point(3.0, 0)
     w.add(c3)
     renderer.add(c3)
     controller3 = MPC(w, 3, np.array([25, 5]))
 
-    for i in range(200):
-        s0, a0 = controller0.look_ahead_with_rollouts()
-        s1, a1 = controller1.look_ahead_with_rollouts()
-        s2, a2 = controller2.look_ahead_with_rollouts()
-        s3, a3 = controller3.look_ahead_with_rollouts()
-        c0.set_control(s0, a0)
-        c1.set_control(s1, a1)
-        c2.set_control(s2, a2)
-        c3.set_control(s3, a3)
+    c4 = Car(Point(40, 25), np.pi, 'black')
+    c4.velocity = Point(3.0, 0)
+    w.add(c4)
+    controller4 = MPC(w, 4, np.array([10, 25]))
+    renderer.add(c4)
 
-        '''
+    c5 = Car(Point(10, 25), 0, 'yellow')
+    c5.velocity = Point(3.0, 0)
+    w.add(c5)
+    renderer.add(c5)
+    controller5 = MPC(w, 5, np.array([40, 25]))
+
+    for i in range(200):
+        start = time.time()
         manager = mp.Manager()
         act = manager.dict()
         p0 = mp.Process(target=controller0.look_ahead_with_rollouts, args= (act, ))
         p1 = mp.Process(target=controller1.look_ahead_with_rollouts, args=(act,))
         p2 = mp.Process(target=controller2.look_ahead_with_rollouts, args=(act,))
         p3 = mp.Process(target=controller3.look_ahead_with_rollouts, args=(act,))
+        p4 = mp.Process(target=controller4.look_ahead_with_rollouts, args=(act,))
+        p5 = mp.Process(target=controller5.look_ahead_with_rollouts, args=(act,))
         p0.start()
         p1.start()
         p2.start()
         p3.start()
+        p4.start()
+        p5.start()
         p0.join()
         p1.join()
         p2.join()
         p3.join()
+        p4.join()
+        p5.join()
         c0.set_control(*act[0])
         c1.set_control(*act[1])
         c2.set_control(*act[2])
         c3.set_control(*act[3])
-        '''
-
+        c4.set_control(*act[4])
+        c5.set_control(*act[5])
+        end = time.time()
+        print(end-start)
         w.tick()
-        renderer.tick()
+
         renderer.render()
 
         if w.collision_exists():
             print('Collision exists somewhere...')
 
-
-
-'''
-
-bugs: guess 的那边 一直拐
-collisio 不detect
-
-'''
