@@ -1,5 +1,4 @@
-import jax
-import jax.numpy as np
+import numpy as np
 from world import World
 from entities import Car
 from geometry import Point
@@ -27,14 +26,9 @@ c2.set_control(0, 0.05)
 for k in range(400):
     # All movable objects will keep their control the same as long as we don't change it.
     if k == 100: # Let's say the first Car will release throttle (and start slowing down due to friction)
-        c1.set_control(0, 0)
+        c2.set_control(0.5, 0)
     elif k == 200: # The first Car starts pushing the brake a little bit. The second Car starts turning right with some throttle.
-        c1.set_control(0, -0.02)
-    elif k == 325:
-        c1.set_control(0, 0.8)
-        c2.set_control(-0.45, 0.3)
-    elif k == 367: # The second Car stops turning.
-        c2.set_control(0, 0.1)
+        c2.set_control(-0.8, 0)
     w.tick() # This ticks the world for one time step (dt second)
     w.render()
     time.sleep(dt/4) # Let's watch it 4x

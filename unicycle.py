@@ -1,4 +1,4 @@
-import jax.numpy as jnp
+import numpy as jnp
 
 ##################################################################
 # Dynamical Model
