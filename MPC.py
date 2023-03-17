@@ -104,17 +104,12 @@ if __name__ == "__main__":
     controllers = []
     cars = []
 
-    set_up_car(w,renderer,controllers, cars, (45,20), np.pi,(10,20))
-    set_up_car(w, renderer, controllers, cars,(10, 20), 0, (45, 20))
+    set_up_car(w,renderer,controllers, cars, (40,20), np.pi,(10,20))
+    set_up_car(w, renderer, controllers, cars,(10, 20), 0, (40, 20))
 
-    set_up_car(w,renderer,controllers,cars, (45,25), np.pi,(10,25),"blue")
-    set_up_car(w, renderer, controllers,cars, (10, 25), 0, (45, 25),"blue")
 
-    set_up_car(w,renderer,controllers, cars,(25,5), np.pi/2,(25,40),"green")
-    set_up_car(w, renderer, controllers, cars,(25, 40), -np.pi/2, (25, 5), "green")
-
-    set_up_car(w,renderer,controllers,cars, (30,5), np.pi/2,(30,40), "purple")
-    set_up_car(w, renderer, controllers, cars,(30, 40), -np.pi/2, (30, 5), "purple")
+    set_up_car(w,renderer,controllers,cars, (25,5), np.pi/2,(25,35), "purple")
+    set_up_car(w, renderer, controllers, cars,(25, 35), -np.pi/2, (25, 5), "purple")
 
     for i in range(200):
         start = time.time()
