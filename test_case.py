@@ -7,7 +7,7 @@ def perturb(data: np.ndarray, scale: float):
 
 
 class Scenario:
-    def __init__(self, num_agent: int, radius: float = 2., seed: int = 42):
+    def __init__(self, num_agent: int, radius: float = 1.5, seed: int = 42):
         np.random.seed(seed)
         self.num_agent = num_agent
         self.radius = radius
@@ -59,7 +59,8 @@ class StraightScenario(Scenario):
         super().__init__(num_agent)
 
         # construct initial conditions as aligned horizontally pointing upwards
-        self.initial_conditions[:, 0] = np.linspace(-spacing / 2, spacing / 2, num_agent)
+        total_spacing = spacing * num_agent
+        self.initial_conditions[:, 0] = np.linspace(-total_spacing / 2, total_spacing / 2, num_agent)
         self.initial_conditions[:, 1] = -travel_dist
         self.initial_conditions[:, 3] = np.pi / 2
 
@@ -108,10 +109,10 @@ TEST_SCENARIOS = [
     CircularScenario(6, 50.),
     CircularScenario(8, 50.),
     CircularScenario(16, 50.),
-    StraightScenario(3, 40., 20.),
-    StraightScenario(4, 60., 30.),
-    StraightScenario(8, 60., 60.),
-    StraightScenario(12, 60., 100.),
+    StraightScenario(3, 50., 12.),
+    StraightScenario(4, 50., 12.),
+    StraightScenario(6, 50., 12.),
+    StraightScenario(10, 50., 12.),
     ExchangeScenario(2, 100.),
     ExchangeScenario(4, 100.),
     ExchangeScenario(6, 100.),
