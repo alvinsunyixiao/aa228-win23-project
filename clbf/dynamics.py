@@ -4,7 +4,9 @@ from abc import ABC, abstractmethod
 
 import jax
 import numpy as np
-import jax.numpy as jnp
+
+from jax import numpy as jnp
+from jax import lax
 
 ##################################################################
 # Dynamical Model
@@ -27,10 +29,6 @@ class AffineCtrlSys(ABC):
     def state_limit(self):
         return -jnp.inf * jnp.ones(self.state_dim), jnp.inf * jnp.ones(self.state_dim)
 
-    @abstractmethod
-    def safety_mask(self, states):
-        pass
-
     @property
     @abstractmethod
     def state_dim(self) -> int:
@@ -44,96 +42,155 @@ class AffineCtrlSys(ABC):
     def dynamics(self, states, controls):
         return self.f(states) + (self.g(states) @ controls[..., jnp.newaxis])[..., 0]
 
+    def u_nominal(self, states):
+        return jnp.zeros(self.control_dim)
 
-class Freeflyer(AffineCtrlSys):
+    def h(self, states, *args):
+        return 0.
+
+class ExtendedUnicycle(AffineCtrlSys):
     def __init__(self,
-        num_neighbors: int = 1,
-        state_limit: T.Sequence[float] = (2., 2., 1., 1.),
-        control_limit: T.Sequence[float] = (5., 5.),
-        safety_thresh: float = 0.2,
+        control_limit: T.Sequence[float] = (2., np.pi),
+        safety_thresh: float = 0.5,
+        active_thresh: float = 2.,
     ):
-        self.num_neighbors = num_neighbors
-        self.safety_thresh = safety_thresh
-        self.xlim = jnp.array(state_limit)
         self.ulim = jnp.array(control_limit)
+        self.safety_thresh = safety_thresh
+        self.active_thresh = active_thresh
         self.rng = jax.random.PRNGKey(42)
 
     def f(self, states):
-        return jnp.zeros_like(states).at[..., :2].set(states[..., 2:4])
+        states_dot = jnp.zeros_like(states)
+        v = states[..., 2]
+        theta = states[..., 3]
+
+        states_dot = states_dot.at[..., 0].set(v * jnp.cos(theta))
+        states_dot = states_dot.at[..., 1].set(v * jnp.sin(theta))
+
+        return states_dot
 
     def g(self, states):
-        x_zeros = jnp.zeros_like(states[..., 0])
-        x_ones = jnp.ones_like(states[..., 0])
+        theta = states[..., 3]
+
+        x_zeros = jnp.zeros_like(theta)
+        x_ones = jnp.ones_like(theta)
 
         col1 = jnp.stack([x_zeros, x_zeros, x_ones, x_zeros], axis=-1)
         col2 = jnp.stack([x_zeros, x_zeros, x_zeros, x_ones], axis=-1)
 
-        g_raw = jnp.stack([col1, col2], axis=-1)
-        g_obs = jnp.zeros(g_raw.shape[:-2] + (self.num_neighbors * 2, 2))
-
-        return jnp.concatenate([g_raw, g_obs], axis=-2)
+        return jnp.stack([col1, col2], axis=-1)
 
     def control_limit(self):
         return -self.ulim, self.ulim
 
-    def state_is_safe(self, states):
-        return jnp.all((states[..., :4] >= -self.xlim) & (states[..., :4] <= self.xlim), axis=-1)
+    def u_nominal(self, states):
+        x = states[..., 0]
+        y = states[..., 1]
+        v = states[..., 2]
+        theta = states[..., 3]
 
-    def safety_mask(self, states):
-        state_mask = self.state_is_safe(states)
-        if self.num_neighbors == 0:
-            return state_mask
+        rho = jnp.linalg.norm(states[..., :2], axis=-1)
+        bearing = lax.select(rho > 1e-3, jnp.arctan2(-y, -x), theta)
 
-        neighbors = states[..., 4:]
-        neighbors_bk2 = jnp.reshape(neighbors, states.shape[:-2] + (-1, 2))
-        self_b2 = states[..., :2]
-        self_b12 = self_b2[..., jnp.newaxis, :]
+        k1 = 0.6
+        k2 = 1.6
+        k3 = 1.0
 
-        dists_bk = jnp.linalg.norm(self_b12 - neighbors_bk2, axis=-1)
-        min_dists_b = jnp.min(dists_bk, axis=-1)
+        def wrap(ang):
+            return (ang + jnp.pi) % (2 * jnp.pi) - jnp.pi
 
-        return (min_dists_b > self.safety_thresh) & state_mask
+        a = k1 * rho * jnp.cos(theta - bearing) - k2 * v
+        t1 = wrap(bearing - theta)
+        t2 = wrap(bearing - theta + jnp.pi)
+        w = k3 * lax.select(jnp.abs(t1) <= jnp.abs(t2), t1, t2)
 
-    def random_states(self,
-        batch_shape: T.Union[int, T.Tuple[int, ...]] = 2**12,
-        max_obs_dist: float = 4.,
-    ):
-        if isinstance(batch_shape, int):
-            batch_shape = (batch_shape,)
+        return jnp.stack([a, w], axis=-1)
 
-        self.rng, subrng = jax.random.split(self.rng)
-        eps = 0.2
-        self_b4 = jax.random.uniform(self.rng, batch_shape + (4,), minval=-self.xlim * (1 + eps), maxval=self.xlim * (1 + eps))
-        self_xy = self_b4[..., :2]
+    def h(self, states, obstacles):
+        xy_b2 = states[..., :2]
+        v_b1 = states[..., 2, jnp.newaxis]
+        theta_b1 = states[..., 3, jnp.newaxis]
+        obs_xy_b2 = obstacles[..., :2]
+        obs_vel_b2 = obstacles[..., 2:]
 
-        others_dir_bk2 = np.random.normal(size=batch_shape + (self.num_neighbors, 2))
-        others_dir_bk2 /= np.maximum(np.linalg.norm(others_dir_bk2, axis=-1, keepdims=True), 1e-9)
-        others_dist_bk1 = np.random.uniform(0, max_obs_dist, size=batch_shape + (self.num_neighbors, 1))
-        others_xy_bk2 = self_xy[..., jnp.newaxis, :] + others_dir_bk2 * others_dist_bk1
-        others_xy_bl = np.reshape(others_xy_bk2, batch_shape + (-1,))
+        vel_xy_b2 = jnp.concatenate([jnp.cos(theta_b1), jnp.sin(theta_b1)], axis=-1) * v_b1
+        vel_local_b2 = vel_xy_b2 - obs_vel_b2
+        vel_mag_b = jnp.sqrt(jnp.sum(vel_local_b2**2, axis=-1) + 1e-8)
 
-        return jnp.concatenate([self_b4, others_xy_bl], axis=-1)
+        xy_local_b2 = obs_xy_b2 - xy_b2
+        dists_b = jnp.sqrt(jnp.sum(xy_local_b2**2, axis=-1))
+        cos_phi_b = jnp.sqrt(dists_b**2 - self.safety_thresh**2) / dists_b
 
-    def random_goal_states(self,
-        batch_shape: T.Union[int, T.Tuple[int, ...]] = 2**12,
-        max_obs_dist: float = 2.,
-    ):
-        if isinstance(batch_shape, int):
-            batch_shape = (batch_shape,)
+        h = jnp.sum(xy_local_b2 * vel_local_b2, axis=-1) - vel_mag_b * dists_b * cos_phi_b
 
-        self_b4 = np.zeros(batch_shape + (4,))
-
-        others_dir_bk2 = np.random.normal(size=batch_shape + (self.num_neighbors, 2))
-        others_dir_bk2 /= np.maximum(np.linalg.norm(others_dir_bk2, axis=-1, keepdims=True), 1e-9)
-        others_dist_bk1 = np.random.uniform(0, max_obs_dist, size=batch_shape + (self.num_neighbors, 1))
-        others_xy_bk2 = others_dir_bk2 * others_dist_bk1
-        others_xy_bl = np.reshape(others_xy_bk2, batch_shape + (-1,))
-
-        return np.concatenate([self_b4, others_xy_bl], axis=-1)
+        return lax.select(dists_b < self.active_thresh, h, jnp.zeros_like(h))
 
     @property
     def state_dim(self):
-        return 4 + self.num_neighbors * 2
+        return 4
+
+    @property
+    def control_dim(self):
+        return 2
+
+
+class Unicycle(AffineCtrlSys):
+    def __init__(self,
+        control_limit: T.Sequence[float] = (2., np.pi),
+        safety_thresh: float = 0.5,
+    ):
+        self.ulim = jnp.array(control_limit)
+        self.safety_thresh = safety_thresh
+
+    def f(self, states):
+        return jnp.zeros_like(states)
+
+    def g(self, states):
+        theta = states[..., 2]
+
+        x_zeros = jnp.zeros_like(theta)
+        x_ones = jnp.ones_like(theta)
+
+        col1 = jnp.stack([jnp.cos(theta), jnp.sin(theta), x_zeros], axis=-1)
+        col2 = jnp.stack([x_zeros, x_zeros, x_ones], axis=-1)
+
+        return jnp.stack([col1, col2], axis=-1)
+
+    def control_limit(self):
+        return -self.ulim, self.ulim
+
+    def u_nominal(self, states):
+        x = states[..., 0]
+        y = states[..., 1]
+        theta = states[..., 2]
+
+        rho = jnp.linalg.norm(states[..., :2], axis=-1)
+        bearing = lax.select(rho > 1e-3, jnp.arctan2(-y, -x), theta)
+
+        k1 = 0.2
+        k2 = 1.2
+
+        def wrap(ang):
+            return (ang + jnp.pi) % (2 * jnp.pi) - jnp.pi
+
+        v = k1 * rho * jnp.cos(theta - bearing)
+        t1 = wrap(bearing - theta)
+        t2 = wrap(bearing - theta + jnp.pi)
+        w = k2 * lax.select(jnp.abs(t1) <= jnp.abs(t2), t1, t2)
+
+        return jnp.stack([v, w], axis=-1)
+
+    def h(self, states, obstacles):
+        xy_b2 = states[..., :2]
+
+        xy_local_b2 = obstacles - xy_b2
+        dists_square_b = jnp.sum(xy_local_b2**2, axis=-1)
+
+        return self.safety_thresh**2 - dists_square_b
+
+    @property
+    def state_dim(self):
+        return 3
 
     @property
     def control_dim(self):
