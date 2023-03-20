@@ -46,24 +46,15 @@ class CBF:
         Lf_h = h_D_x @ self.dynamics.f(state)
         Lg_h = h_D_x @ self.dynamics.g(state)
 
-        # objective
-        def matvec_Q(_, u):
-            return 2 * Q * u
+        if isinstance(Q, float):
+            Q = Q * jnp.ones(self.dynamics.control_dim)
 
+        Q_mat = 2. * jnp.diag(Q)
         if u_ref is None:
             u_ref = self.dynamics.u_nominal(state)
         c = -2. * Q * u_ref
 
-        # inequality
-        def matvec_G(Lg_h, u):
-            # CBF QP
-            y_cbf = Lg_h @ u
-            # control constraints
-            y_low = -u
-            y_high = u
-
-            return jnp.concatenate([y_cbf, y_low, y_high])
-
+        G = jnp.concatenate([Lg_h, -jnp.eye(self.dynamics.control_dim), jnp.eye(self.dynamics.control_dim)], axis=0)
         b_cbf = -self.cbf_lambda*h - Lf_h
         ulim_low, ulim_high = self.dynamics.control_limit()
         b = jnp.concatenate([b_cbf, -ulim_low, ulim_high])
@@ -71,9 +62,9 @@ class CBF:
         # solve OSQP
         if u_init is None:
             u_init = u_ref
-        qp = OSQP(matvec_Q=matvec_Q, matvec_G=matvec_G, maxiter=maxiter, tol=1e-4)
-        init_params = qp.init_params(u_init, (None, c), None, (Lg_h, b))
-        sol = qp.run(init_params, params_obj=(None, c), params_ineq=(Lg_h, b))
+        qp = OSQP(eq_qp_solve="cg+jacobi", maxiter=maxiter)
+        init_params = qp.init_params(u_init, (Q_mat, c), None, (G, b))
+        sol = qp.run(init_params, params_obj=(Q_mat, c), params_ineq=(G, b))
 
         hdot = Lf_h + Lg_h @ sol.params.primal
 

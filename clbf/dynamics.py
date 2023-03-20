@@ -92,7 +92,7 @@ class ExtendedUnicycle(AffineCtrlSys):
         rho = jnp.linalg.norm(states[..., :2], axis=-1)
         bearing = lax.select(rho > 1e-3, jnp.arctan2(-y, -x), theta)
 
-        k1 = 0.6
+        k1 = 0.5
         k2 = 1.6
         k3 = 1.0
 
@@ -103,6 +103,9 @@ class ExtendedUnicycle(AffineCtrlSys):
         t1 = wrap(bearing - theta)
         t2 = wrap(bearing - theta + jnp.pi)
         w = k3 * lax.select(jnp.abs(t1) <= jnp.abs(t2), t1, t2)
+
+        a = jnp.clip(a, -self.ulim[0], self.ulim[0])
+        w = jnp.clip(w, -self.ulim[1], self.ulim[1])
 
         return jnp.stack([a, w], axis=-1)
 
@@ -121,7 +124,7 @@ class ExtendedUnicycle(AffineCtrlSys):
         dists_b = jnp.sqrt(jnp.sum(xy_local_b2**2, axis=-1))
         cos_phi_b = jnp.sqrt(dists_b**2 - self.safety_thresh**2) / dists_b
 
-        h = jnp.sum(xy_local_b2 * vel_local_b2, axis=-1) - vel_mag_b * dists_b * cos_phi_b
+        h = jnp.sum(xy_local_b2 * vel_local_b2, axis=-1) / dists_b - vel_mag_b * cos_phi_b
 
         return lax.select(dists_b < self.active_thresh, h, jnp.zeros_like(h))
 
